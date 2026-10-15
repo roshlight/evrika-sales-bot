@@ -13,12 +13,86 @@ from evrika.memory import (
     MEMORY_SYSTEM, build_summary_request, choose_summary_plan, parse_memory_answer,
 )
 from evrika.privacy import suitable_for_long_memory
-from evrika.humanizer import parse_bubbles, pre_message_pause, typing_seconds
-from evrika.prompts import build_prompt, extract_text, load_persona, to_bedrock_messages
+from evrika.humanizer import FALLBACK_MESSAGE, parse_bubbles, parse_response, pre_message_pause, typing_seconds
+from evrika.prompts import build_prompt, extract_text, load_knowledge_base, load_persona, to_bedrock_messages
 from evrika.settings import Settings
 from evrika.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+class PromptTests(unittest.TestCase):
+    def test_curated_persona_and_ai_disclosure(self):
+        obj = load_persona(ROOT / 'persona.json')
+        prompt = build_prompt(obj, {"summary": "Had a fun birthday chat", "facts": []})
+        self.assertIn(obj['name'], prompt)
+        self.assertIn('ИИ', obj['identity_rules']['if_asked_about_ai'])
+        self.assertIn('Had a fun birthday chat', prompt)
+        self.assertIn('UNTRUSTED DATA', prompt)
+        self.assertNotIn('гарантирован', json.dumps(obj, ensure_ascii=False))
+
+    def test_normalize_messages_merges_consecutive_and_starts_user(self):
+        m = to_bedrock_messages([
+            ('assistant', 'old'), ('user', 'hey'), ('user', 'again'),
+            ('assistant', 'hello'), ('assistant', 'yep'), ('user', 'end'),
+        ])
+        self.assertEqual([e['role'] for e in m], ['user', 'assistant', 'user'])
+        self.assertIn('again', m[0]['content'][0]['text'])
+
+    def test_extract_text_from_converse(self):
+        body = {'output': {'message': {'content': [{'text': 'first'}, {'text': 'second'}]}}}
+        self.assertEqual(extract_text(body), 'first\nsecond')
+        self.assertEqual(extract_text({}), '')
+
+    def test_prompt_requests_optional_bubble_json_without_forced_splitting(self):
+        prompt = build_prompt(load_persona(ROOT / 'persona.json'))
+        self.assertIn('"messages"', prompt)
+        self.assertIn('"crm_state"', prompt)
+        self.assertIn('Never more than 3', prompt)
+
+    def test_prompt_uses_only_catalog_prices(self):
+        prompt = build_prompt(load_persona(ROOT / 'persona.json'), load_knowledge_base(ROOT / 'knowledge_base.json'))
+        self.assertIn('Use ONLY prices and URLs from knowledge_base_json', prompt)
+        self.assertIn('Базовый 7 класс', prompt)
+
+
+class HumanizerTests(unittest.TestCase):
+    def test_model_controls_natural_message_boundaries(self):
+        raw = json.dumps({'messages': ['nu che', 'ty tam zhivoy', 'a']})
+        self.assertEqual(parse_bubbles(raw, max_bubbles=3), ['nu che', 'ty tam zhivoy', 'a'])
+
+    def test_json_wrapped_in_text_is_parsed(self):
+        raw = 'Вот ответ:\n```json\n{"messages": ["Привет"], "crm_state": {"lead_category": "WARM"}}\n```'
+        bubbles, state = parse_response(raw)
+        self.assertEqual(bubbles, ['Привет'])
+        self.assertEqual(state['lead_category'], 'WARM')
+
+    def test_truncated_json_is_never_shown_to_client(self):
+        raw = '{"messages": ["Привет, это Эврика"], "crm_state": {"funnel_stage": "gree'
+        bubbles, state = parse_response(raw)
+        self.assertEqual(bubbles, [FALLBACK_MESSAGE])
+        self.assertIsNone(state)
+
+    def test_single_message_stays_single(self):
+        self.assertEqual(parse_bubbles('{"messages": ["Privet!"]}'), ['Privet!'])
+        self.assertEqual(parse_bubbles('Simple ordinary answer'), ['Simple ordinary answer'])
+
+    def test_protect_against_excessive_message_spam(self):
+        raw = json.dumps({'messages': ['a', 'b', 'c', 'd', 'e', 'f']})
+        self.assertEqual(parse_bubbles(raw, max_bubbles=3), ['a', 'b', 'c\nd\ne\nf'])
+        self.assertEqual(parse_bubbles(raw, max_bubbles=1), ['a\nb\nc\nd\ne\nf'])
+
+    def test_fenced_json_and_empty_replies(self):
+        self.assertEqual(parse_bubbles('```json\n{"messages":["x"]}\n```'), ['x'])
+        self.assertEqual(parse_bubbles(''), [])
+        self.assertEqual(parse_bubbles('{"messages":[]}'), [])
+
+    def test_realistic_timing_is_bounded(self):
+        for _ in range(100):
+            self.assertGreaterEqual(typing_seconds('a', min_seconds=1.2, max_seconds=7), 1.2)
+            self.assertLessEqual(typing_seconds('long sentence ' * 40, min_seconds=1.2, max_seconds=7), 7)
+            self.assertGreaterEqual(pre_message_pause(0), .5)
+            self.assertLessEqual(pre_message_pause(1), 1.4)
 
 
 class StoreTests(unittest.TestCase):
@@ -55,7 +129,7 @@ class StoreTests(unittest.TestCase):
         summary = {"summary": "We discussed work and weekend", "facts": ["Likes comedy"],
                    "open_threads": ["Choose a movie"], "tone_notes": ["Banter"]}
         self.store.save_memory(summary, plan.next_checkpoint)
-        self.assertEqual(len(self.store.recent_messages(100)), 20)
+        self.assertEqual(len(self.store.recent_messages(100)), 6)
         self.assertFalse(self.store.add_user(2000, 'old replay'))
         self.assertIsNone(choose_summary_plan(self.store, 6, 5))
         for i in range(20, 26):
@@ -150,7 +224,7 @@ class EndToEndMemoryTests(unittest.TestCase):
                 self.assertIn('movies', memory['summary'])
                 self.assertEqual([x in fake.called for x in [MEMORY_SYSTEM]], [True])
                 self.assertEqual(store.usage()['calls'], 2)
-                self.assertGreater(len(store.recent_messages(20)), 6)
+                self.assertLessEqual(len(store.recent_messages(20)), 6)
                 store.close()
 
         asyncio.run(exercise())

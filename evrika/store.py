@@ -121,13 +121,12 @@ class Store:
                 "UPDATE memory SET summary_json=?, summarized_until=? WHERE id=1",
                 (json.dumps(value, ensure_ascii=False), summarized_until),
             )
-            # Preserve the transcript; checkpoint bounds the next compaction.
+            self.conn.execute("DELETE FROM messages WHERE id<=?", (summarized_until,))
 
     def clear_chat(self) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM messages")
             self.conn.execute("DELETE FROM seen_telegram")
-            self.conn.execute("DELETE FROM leads")
             self.conn.execute("UPDATE memory SET summary_json=?,summarized_until=0 WHERE id=1",
                               (json.dumps(EMPTY_MEMORY),))
         self.set_flag("memory_epoch", str(int(self.get_flag("memory_epoch", "0")) + 1))
@@ -173,20 +172,53 @@ class Store:
         ).fetchone()
         return dict(row)
 
-    def save_lead(self, state: dict) -> None:
-        """Model proposal only; never a delivery receipt. One lead per chat database."""
+    # ── CRM Leads ─────────────────────────────────────────────
+
+    def upsert_lead(self, user_id: int, crm_state: dict) -> None:
+        """Insert or update the CRM lead record for a user."""
+        lead_category = crm_state.get("lead_category")
+        funnel_stage = crm_state.get("funnel_stage")
+        handoff = 1 if crm_state.get("handoff_to_manager") else 0
+        crm_json = json.dumps(crm_state, ensure_ascii=False)
         self.conn.execute(
-            "INSERT INTO leads(user_id,lead_category,funnel_stage,crm_json) VALUES(1,?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET lead_category=excluded.lead_category, "
-            "funnel_stage=excluded.funnel_stage, crm_json=excluded.crm_json, "
-            "updated_at=CURRENT_TIMESTAMP",
-            (state.get("lead_category"), state.get("funnel_stage"), json.dumps(state, ensure_ascii=False)),
+            """INSERT INTO leads(user_id, lead_category, funnel_stage, handoff_triggered, crm_json, updated_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   lead_category=excluded.lead_category,
+                   funnel_stage=excluded.funnel_stage,
+                   handoff_triggered=MAX(leads.handoff_triggered, excluded.handoff_triggered),
+                   crm_json=excluded.crm_json,
+                   updated_at=CURRENT_TIMESTAMP""",
+            (user_id, lead_category, funnel_stage, handoff, crm_json),
         )
         self.conn.commit()
 
-    def load_lead(self) -> dict:
-        row = self.conn.execute("SELECT crm_json FROM leads WHERE user_id=1").fetchone()
-        return json.loads(row[0]) if row else {}
+    def get_lead(self, user_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM leads WHERE user_id=?", (user_id,)).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def was_handoff_sent(self, user_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT handoff_triggered FROM leads WHERE user_id=?", (user_id,)
+        ).fetchone()
+        return bool(row and row["handoff_triggered"])
+
+    def mark_handoff_sent(self, user_id: int) -> None:
+        self.conn.execute(
+            "UPDATE leads SET handoff_triggered=1, updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
+            (user_id,),
+        )
+        self.conn.commit()
+
+    def mark_followup_sent(self, user_id: int) -> None:
+        self.set_flag(f"followup_sent_{user_id}", "1")
+
+    def was_followup_sent(self, user_id: int) -> bool:
+        return self.get_flag(f"followup_sent_{user_id}", "0") == "1"
+
+    # ── Lifecycle ─────────────────────────────────────────────
 
     def close(self) -> None:
         self.conn.close()
