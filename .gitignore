@@ -1,12 +1,29 @@
+# Credentials and local configuration
 .env
-.venv/
+.env.*
+!.env.example
+# Conversation data
 data/*
 !data/.gitkeep
+*.session
+*.session-*
+*.session-journal
+*.sqlite*
+*.db
+*.log
+log.txt
+# Runtime and Telegram Desktop
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-*.session
-*.session-journal
+tdata/
+tupdates/
+modules/
+*.exe
+*.dll
+.DS_Store
 *.zip
 messages.html
 *osint*
