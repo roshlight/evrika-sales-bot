@@ -1,0 +1,24 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+# Original private persona and conversation data
+persona.json
+data/
+*.session
+*.session-*
+*.sqlite*
+*.db
+*.log
+log.txt
+# Runtime and Telegram Desktop
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+tdata/
+tupdates/
+modules/
+*.exe
+*.dll
+.DS_Store
