@@ -2,11 +2,12 @@
 .env
 .env.*
 !.env.example
-# Original private persona and conversation data
-persona.json
-data/
+# Conversation data
+data/*
+!data/.gitkeep
 *.session
 *.session-*
+*.session-journal
 *.sqlite*
 *.db
 *.log
@@ -16,9 +17,14 @@ log.txt
 venv/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 tdata/
 tupdates/
 modules/
 *.exe
 *.dll
 .DS_Store
+*.zip
+messages.html
+*osint*
+*Sherlock*

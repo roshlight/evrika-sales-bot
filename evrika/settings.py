@@ -69,6 +69,7 @@ class Settings:
     target_usernames: tuple[str, ...]
     target_user_ids: tuple[int, ...]
     allow_all_private_chats: bool
+    admin_chat_id: int
     aws_region: str
     model_id: str
     max_output_tokens: int
@@ -81,11 +82,11 @@ class Settings:
     typing_chars_per_second: float
     typing_min_seconds: float
     typing_max_seconds: float
+    followup_timeout_seconds: float
     log_level: str
 
     @classmethod
     def from_env(cls, telegram_required: bool = True) -> "Settings":
-        # Legacy singular fields remain supported when upgrading from v2.
         names, ids = parse_targets(
             ','.join(filter(None, [os.getenv('TARGET_USERNAMES', ''), os.getenv('TARGET_USERNAME', '')])),
             ','.join(filter(None, [os.getenv('TARGET_USER_IDS', ''), os.getenv('TARGET_USER_ID', '')])),
@@ -106,20 +107,27 @@ class Settings:
         typing_max = _float('TYPING_MAX_SECONDS', 7.0, 0.1, 60)
         if typing_max < typing_min:
             raise ValueError('TYPING_MAX_SECONDS cannot be below TYPING_MIN_SECONDS')
+        admin_raw = os.getenv('ADMIN_CHAT_ID', '0').strip()
+        try:
+            admin_chat_id = int(admin_raw)
+        except ValueError:
+            admin_chat_id = 0
         return cls(
             api_id=api_id, api_hash=api_hash,
             target_usernames=names, target_user_ids=ids,
             allow_all_private_chats=allow_all,
+            admin_chat_id=admin_chat_id,
             aws_region=os.getenv('AWS_REGION', 'eu-north-1').strip(),
             model_id=os.getenv('BEDROCK_MODEL_ID', 'eu.anthropic.claude-sonnet-4-6').strip(),
-            max_output_tokens=_int('MAX_OUTPUT_TOKENS', 1800, 64, 4096),
-            max_calls_hour=_int('MAX_MODEL_CALLS_PER_HOUR', 30, 1, 10000),
-            max_calls_total=_int('MAX_MODEL_CALLS_TOTAL', 300, 1, 100000),
-            recent_context=_int('RECENT_CONTEXT_MESSAGES', 24, 6, 100),
-            summary_trigger=_int('SUMMARY_TRIGGER_MESSAGES', 12, 2, 100),
+            max_output_tokens=_int('MAX_OUTPUT_TOKENS', 1500, 64, 4096),
+            max_calls_hour=_int('MAX_MODEL_CALLS_PER_HOUR', 120, 1, 10000),
+            max_calls_total=_int('MAX_MODEL_CALLS_TOTAL', 5000, 1, 100000),
+            recent_context=_int('RECENT_CONTEXT_MESSAGES', 30, 6, 100),
+            summary_trigger=_int('SUMMARY_TRIGGER_MESSAGES', 16, 2, 100),
             debounce_seconds=_float('DEBOUNCE_SECONDS', 2.4, 0.1, 15),
             max_reply_bubbles=_int('MAX_REPLY_BUBBLES', 3, 1, 4),
             typing_chars_per_second=_float('TYPING_CHARS_PER_SECOND', 14.0, 1, 60),
             typing_min_seconds=typing_min, typing_max_seconds=typing_max,
+            followup_timeout_seconds=_float('FOLLOWUP_TIMEOUT_SECONDS', 900.0, 60, 3600),
             log_level=os.getenv('LOG_LEVEL', 'INFO').upper(),
         )
