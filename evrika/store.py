@@ -1,4 +1,4 @@
-"""Private local SQLite: chat turns, cumulative memories, requests and flags."""
+"""Private local SQLite: chat turns, cumulative memories, requests, flags and CRM leads."""
 from __future__ import annotations
 
 import json
@@ -44,12 +44,22 @@ class Store:
             output_tokens INTEGER DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'started'
         );
+        CREATE TABLE IF NOT EXISTS leads (
+            user_id INTEGER PRIMARY KEY,
+            lead_category TEXT,
+            funnel_stage TEXT,
+            handoff_triggered INTEGER NOT NULL DEFAULT 0,
+            crm_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         self.conn.execute(
             "INSERT OR IGNORE INTO memory(id,summary_json,summarized_until) VALUES (1,?,0)",
             (json.dumps(EMPTY_MEMORY),),
         )
         self.conn.commit()
+
+    # ── Messages ──────────────────────────────────────────────
 
     def add_user(self, telegram_message_id: int, text: str) -> bool:
         with self.conn:
@@ -82,6 +92,22 @@ class Store:
         ).fetchall()
         return [(int(row["id"]), row["role"], row["text"]) for row in rows]
 
+    def last_user_message_time(self) -> str | None:
+        """Return created_at of the most recent user message, or None."""
+        row = self.conn.execute(
+            "SELECT created_at FROM messages WHERE role='user' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["created_at"] if row else None
+
+    def last_assistant_message_time(self) -> str | None:
+        """Return created_at of the most recent assistant message, or None."""
+        row = self.conn.execute(
+            "SELECT created_at FROM messages WHERE role='assistant' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["created_at"] if row else None
+
+    # ── Memory ────────────────────────────────────────────────
+
     def load_memory(self) -> tuple[dict[str, Any], int]:
         row = self.conn.execute("SELECT summary_json,summarized_until FROM memory WHERE id=1").fetchone()
         return json.loads(row["summary_json"]), int(row["summarized_until"])
@@ -95,17 +121,18 @@ class Store:
                 "UPDATE memory SET summary_json=?, summarized_until=? WHERE id=1",
                 (json.dumps(value, ensure_ascii=False), summarized_until),
             )
-            # Keep recent dialogue verbatim; compact and drop old raw text.
-            # Seen IDs remain in a separate table to prevent replay duplicates.
-            self.conn.execute("DELETE FROM messages WHERE id<=?", (summarized_until,))
+            # Preserve the transcript; checkpoint bounds the next compaction.
 
     def clear_chat(self) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM messages")
             self.conn.execute("DELETE FROM seen_telegram")
+            self.conn.execute("DELETE FROM leads")
             self.conn.execute("UPDATE memory SET summary_json=?,summarized_until=0 WHERE id=1",
                               (json.dumps(EMPTY_MEMORY),))
         self.set_flag("memory_epoch", str(int(self.get_flag("memory_epoch", "0")) + 1))
+
+    # ── Flags ─────────────────────────────────────────────────
 
     def set_flag(self, name: str, value: str) -> None:
         self.conn.execute(
@@ -117,6 +144,8 @@ class Store:
     def get_flag(self, name: str, default: str = "") -> str:
         row = self.conn.execute("SELECT value FROM flags WHERE name=?", (name,)).fetchone()
         return row["value"] if row else default
+
+    # ── Request budget ────────────────────────────────────────
 
     def begin_request(self, kind: str, limit_per_hour: int, limit_total: int) -> int | None:
         hourly = self.conn.execute(
@@ -143,6 +172,21 @@ class Store:
             "COALESCE(SUM(output_tokens),0) output_tokens FROM requests"
         ).fetchone()
         return dict(row)
+
+    def save_lead(self, state: dict) -> None:
+        """Model proposal only; never a delivery receipt. One lead per chat database."""
+        self.conn.execute(
+            "INSERT INTO leads(user_id,lead_category,funnel_stage,crm_json) VALUES(1,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET lead_category=excluded.lead_category, "
+            "funnel_stage=excluded.funnel_stage, crm_json=excluded.crm_json, "
+            "updated_at=CURRENT_TIMESTAMP",
+            (state.get("lead_category"), state.get("funnel_stage"), json.dumps(state, ensure_ascii=False)),
+        )
+        self.conn.commit()
+
+    def load_lead(self) -> dict:
+        row = self.conn.execute("SELECT crm_json FROM leads WHERE user_id=1").fetchone()
+        return json.loads(row[0]) if row else {}
 
     def close(self) -> None:
         self.conn.close()

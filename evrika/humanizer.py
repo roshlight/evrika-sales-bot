@@ -22,29 +22,10 @@ def _extract_json(raw: str) -> Any:
         return None
 
 
-def parse_bubbles(raw: str, max_bubbles: int = 3) -> list[str]:
-    """Accept {messages:[...]}; fail safely to one text bubble on malformed JSON.
+from evrika.response import parse_response
 
-    The output cap prevents a cascade of notifications. No automatic sentence
-    splitting: if the model wants one longer message, we keep one message.
-    """
-    if not isinstance(raw, str) or not raw.strip():
-        return []
-    max_bubbles = max(1, min(4, max_bubbles))
-    payload = _extract_json(raw)
-    if isinstance(payload, dict) and isinstance(payload.get('messages'), list):
-        values = [x.strip()[:4000] for x in payload['messages'] if isinstance(x, str) and x.strip()]
-    elif isinstance(payload, list):
-        values = [x.strip()[:4000] for x in payload if isinstance(x, str) and x.strip()]
-    elif isinstance(payload, dict) and isinstance(payload.get('message'), str):
-        values = [payload['message'].strip()[:4000]]
-    else:
-        values = [raw.strip()[:4000]]
-    if not values:
-        return []
-    if len(values) > max_bubbles:
-        values = values[:max_bubbles - 1] + ['\n'.join(values[max_bubbles - 1:])[:4000]]
-    return values
+def parse_bubbles(raw: str, max_bubbles: int = 3) -> list[str]:
+    return parse_response(raw, max_bubbles)[0]
 
 
 def typing_seconds(

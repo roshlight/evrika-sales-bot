@@ -112,7 +112,7 @@ class Settings:
             allow_all_private_chats=allow_all,
             aws_region=os.getenv('AWS_REGION', 'eu-north-1').strip(),
             model_id=os.getenv('BEDROCK_MODEL_ID', 'eu.anthropic.claude-sonnet-4-6').strip(),
-            max_output_tokens=_int('MAX_OUTPUT_TOKENS', 320, 64, 2048),
+            max_output_tokens=_int('MAX_OUTPUT_TOKENS', 1800, 64, 4096),
             max_calls_hour=_int('MAX_MODEL_CALLS_PER_HOUR', 30, 1, 10000),
             max_calls_total=_int('MAX_MODEL_CALLS_TOTAL', 300, 1, 100000),
             recent_context=_int('RECENT_CONTEXT_MESSAGES', 24, 6, 100),
